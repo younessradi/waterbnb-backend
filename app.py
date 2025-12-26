@@ -45,7 +45,7 @@ def utcnow_iso():
 app.config["MQTT_BROKER_URL"] = MQTT_HOST
 app.config["MQTT_BROKER_PORT"] = MQTT_PORT
 app.config["MQTT_TLS_ENABLED"] = False
-
+print(f"[MQTT] config host={MQTT_HOST} port={MQTT_PORT}") 
 mqtt = Mqtt(app)
 
 @mqtt.on_connect()
@@ -153,3 +153,4 @@ def open_pool():
 if __name__ == "__main__":
     # IMPORTANT: 0.0.0.0 allows other devices on your LAN to reach it
     app.run(host="0.0.0.0", port=5000, debug=False)
+
