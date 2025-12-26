@@ -1,0 +1,5 @@
+Flask
+Gunicorn
+flask-mqtt
+pymongo[srv]
+python-dotenv
