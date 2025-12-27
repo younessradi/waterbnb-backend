@@ -1,5 +1,6 @@
 import os
 import json
+import ssl
 from datetime import datetime, timezone
 
 from flask import Flask, request, jsonify
@@ -16,6 +17,7 @@ TOPIC_CMD_BASE = os.environ.get("TOPIC_CMD_BASE", "uca/iot/piscine/cmd")
 MQTT_USERNAME = os.environ.get("MQTT_USERNAME")
 MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD")
 MQTT_TLS_CA_CERTS = os.environ.get("MQTT_TLS_CA_CERTS")
+MQTT_TLS_CIPHERS = os.environ.get("MQTT_TLS_CIPHERS")
 
 
 def env_bool(name: str, default: str = "false") -> bool:
@@ -61,6 +63,10 @@ if MQTT_PASSWORD:
     app.config["MQTT_PASSWORD"] = MQTT_PASSWORD
 if MQTT_TLS_CA_CERTS:
     app.config["MQTT_TLS_CA_CERTS"] = MQTT_TLS_CA_CERTS
+if MQTT_TLS_ENABLED:
+    app.config["MQTT_TLS_VERSION"] = ssl.PROTOCOL_TLSv1_2
+    if MQTT_TLS_CIPHERS:
+        app.config["MQTT_TLS_CIPHERS"] = MQTT_TLS_CIPHERS
 
 mqtt = Mqtt(app)
 
