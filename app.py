@@ -74,6 +74,8 @@ def utcnow_iso():
 app.config["MQTT_BROKER_URL"] = MQTT_HOST
 app.config["MQTT_BROKER_PORT"] = MQTT_PORT
 app.config["MQTT_TLS_ENABLED"] = MQTT_TLS_ENABLED
+# Render may spawn multiple workers; give each MQTT client a unique id to avoid broker disconnect churn.
+app.config["MQTT_CLIENT_ID"] = os.environ.get("MQTT_CLIENT_ID") or f"waterbnb-{os.getpid()}"
 if MQTT_USERNAME:
     app.config["MQTT_USERNAME"] = MQTT_USERNAME
 if MQTT_PASSWORD:
