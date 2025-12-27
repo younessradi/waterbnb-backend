@@ -86,6 +86,15 @@ if MQTT_TLS_ENABLED:
         app.config["MQTT_TLS_CIPHERS"] = MQTT_TLS_CIPHERS
 
 mqtt = Mqtt(app)
+print(
+    "[MQTT] config host={host} port={port} tls={tls} cmd_base={cmd} user_set={user}".format(
+        host=MQTT_HOST,
+        port=MQTT_PORT,
+        tls=MQTT_TLS_ENABLED,
+        cmd=TOPIC_CMD_BASE,
+        user=bool(MQTT_USERNAME),
+    )
+)
 
 @mqtt.on_connect()
 def on_connect(client, userdata, flags, rc):
@@ -95,6 +104,11 @@ def on_connect(client, userdata, flags, rc):
         print(f"[MQTT] subscribed to {TOPIC_POOLS}")
     else:
         print("[MQTT] connect failed rc=", rc)
+
+
+@mqtt.on_disconnect()
+def on_disconnect(client, userdata, rc):
+    print("[MQTT] disconnected rc=", rc)
 
 @mqtt.on_message()
 def on_message(client, userdata, msg):
@@ -144,10 +158,20 @@ def on_message(client, userdata, msg):
         print("[MQTT] bad payload:", e)
 
 def publish_decision(pool_id: str, decision: str):
-    topic = f"{TOPIC_CMD_BASE}/{pool_id}"
+    topic = f"{TOPIC_CMD_BASE.rstrip('/')}/{pool_id}"
     payload = json.dumps({"pool": pool_id, "decision": decision, "ts": utcnow_iso()})
-    mqtt.publish(topic, payload)
-    print(f"[CMD] {topic} -> {payload}")
+    try:
+        client = getattr(mqtt, "client", None)
+        if client is not None and not client.is_connected():
+            print("[MQTT] publish while disconnected")
+        result = mqtt.publish(topic, payload, qos=1)
+        if isinstance(result, tuple):
+            rc, mid = result
+            print(f"[CMD] {topic} -> {payload} (rc={rc} mid={mid})")
+        else:
+            print(f"[CMD] {topic} -> {payload}")
+    except Exception as exc:
+        print("[CMD] publish failed:", exc)
 
 @app.get("/")
 def health():
