@@ -74,6 +74,9 @@ def utcnow_iso():
 app.config["MQTT_BROKER_URL"] = MQTT_HOST
 app.config["MQTT_BROKER_PORT"] = MQTT_PORT
 app.config["MQTT_TLS_ENABLED"] = MQTT_TLS_ENABLED
+# Optional: allow explicit MQTT client id via env to avoid broker kicking reconnects.
+if os.environ.get("MQTT_CLIENT_ID"):
+    app.config["MQTT_CLIENT_ID"] = os.environ["MQTT_CLIENT_ID"]
 if MQTT_USERNAME:
     app.config["MQTT_USERNAME"] = MQTT_USERNAME
 if MQTT_PASSWORD:
