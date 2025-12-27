@@ -40,6 +40,7 @@ mongo = MongoClient(MONGODB_URI)
 db = mongo["WaterBnB"]
 users = db["users"]
 access_logs = db["access_logs"]
+pools = db["pools"]
 
 # -----------------------
 # Pool state (in-memory)
@@ -47,6 +48,22 @@ access_logs = db["access_logs"]
 # ident -> occupied bool
 pool_occupied = {}
 
+def load_pool_cache() -> None:
+    loaded = 0
+    try:
+        for doc in pools.find({}, {"ident": 1, "occupied": 1}):
+            ident = doc.get("ident")
+            if ident is None or "occupied" not in doc:
+                continue
+            pool_occupied[ident] = bool(doc.get("occupied"))
+            loaded += 1
+        if loaded:
+            print(f"[POOL] cache loaded {loaded} pools from Mongo")
+    except Exception as exc:
+        print("[POOL] cache load failed:", exc)
+
+
+load_pool_cache()
  
 def utcnow_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -113,6 +130,14 @@ def on_message(client, userdata, msg):
 
 
         pool_occupied[ident] = occupied
+        try:
+            pools.update_one(
+                {"ident": ident},
+                {"$set": {"ident": ident, "occupied": occupied, "updated_at": datetime.now(timezone.utc)}},
+                upsert=True,
+            )
+        except Exception as exc:
+            print("[POOL] Mongo update failed:", exc)
         print(f"[POOL] {ident} occupied={occupied}")
 
     except Exception as e:
@@ -138,8 +163,16 @@ def open_pool():
 
     user_ok = users.find_one({"name": idu}) is not None
 
-    pool_known = idswp in pool_occupied
-    pool_free = pool_known and (pool_occupied[idswp] is False)
+    occupied = pool_occupied.get(idswp)
+    pool_known = occupied is not None
+    if not pool_known:
+        doc = pools.find_one({"ident": idswp}, {"occupied": 1})
+        if doc is not None and "occupied" in doc:
+            occupied = bool(doc.get("occupied"))
+            pool_occupied[idswp] = occupied
+            pool_known = True
+
+    pool_free = pool_known and (occupied is False)
 
     granted = user_ok and pool_free
     decision = "granted" if granted else "refused"
