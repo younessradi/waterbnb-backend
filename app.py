@@ -13,6 +13,16 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "test.mosquitto.org")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 TOPIC_POOLS = os.environ.get("TOPIC_POOLS", "uca/iot/piscine")
 TOPIC_CMD_BASE = os.environ.get("TOPIC_CMD_BASE", "uca/iot/piscine/cmd")
+MQTT_USERNAME = os.environ.get("MQTT_USERNAME")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD")
+MQTT_TLS_CA_CERTS = os.environ.get("MQTT_TLS_CA_CERTS")
+
+
+def env_bool(name: str, default: str = "false") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+MQTT_TLS_ENABLED = env_bool("MQTT_TLS_ENABLED", "false")
 
 MONGODB_URI = os.environ.get("MONGODB_URI")  # REQUIRED
 if not MONGODB_URI:
@@ -44,8 +54,14 @@ def utcnow_iso():
 # -----------------------
 app.config["MQTT_BROKER_URL"] = MQTT_HOST
 app.config["MQTT_BROKER_PORT"] = MQTT_PORT
-app.config["MQTT_TLS_ENABLED"] = False
-print(f"[MQTT] config host={MQTT_HOST} port={MQTT_PORT}") 
+app.config["MQTT_TLS_ENABLED"] = MQTT_TLS_ENABLED
+if MQTT_USERNAME:
+    app.config["MQTT_USERNAME"] = MQTT_USERNAME
+if MQTT_PASSWORD:
+    app.config["MQTT_PASSWORD"] = MQTT_PASSWORD
+if MQTT_TLS_CA_CERTS:
+    app.config["MQTT_TLS_CA_CERTS"] = MQTT_TLS_CA_CERTS
+
 mqtt = Mqtt(app)
 
 @mqtt.on_connect()
@@ -153,4 +169,3 @@ def open_pool():
 if __name__ == "__main__":
     # IMPORTANT: 0.0.0.0 allows other devices on your LAN to reach it
     app.run(host="0.0.0.0", port=5000, debug=False)
-
