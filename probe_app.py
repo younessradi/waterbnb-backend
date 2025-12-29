@@ -1,10 +1,12 @@
 import json
 import os
+import socket
 import ssl
+import uuid
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request
-from flask_mqtt import Mqtt
+import paho.mqtt.client as mqtt
 
 
 def env_bool(name: str, default: str = "false") -> bool:
@@ -23,28 +25,12 @@ MQTT_TLS_CA_CERTS = os.environ.get("MQTT_TLS_CA_CERTS")
 MQTT_TLS_CIPHERS = os.environ.get("MQTT_TLS_CIPHERS")
 MQTT_TLS_ENABLED = env_bool("MQTT_TLS_ENABLED", "false")
 TOPIC_CMD_BASE = os.environ.get("TOPIC_CMD_BASE", "uca/iot/piscine/cmd")
+MQTT_FORCE_IPV4 = env_bool("MQTT_FORCE_IPV4", "true")
+MQTT_KEEPALIVE = int(os.environ.get("MQTT_KEEPALIVE", "30"))
+MQTT_PUBLISH_TIMEOUT = float(os.environ.get("MQTT_PUBLISH_TIMEOUT", "5"))
+MQTT_TLS_INSECURE = env_bool("MQTT_TLS_INSECURE", "false")
 
 app = Flask(__name__)
-
-app.config["MQTT_BROKER_URL"] = MQTT_HOST
-app.config["MQTT_BROKER_PORT"] = MQTT_PORT
-app.config["MQTT_TLS_ENABLED"] = MQTT_TLS_ENABLED
-if os.environ.get("MQTT_CLIENT_ID"):
-    app.config["MQTT_CLIENT_ID"] = os.environ["MQTT_CLIENT_ID"]
-if MQTT_USERNAME:
-    app.config["MQTT_USERNAME"] = MQTT_USERNAME
-if MQTT_PASSWORD:
-    app.config["MQTT_PASSWORD"] = MQTT_PASSWORD
-if os.environ.get("MQTT_KEEPALIVE"):
-    app.config["MQTT_KEEPALIVE"] = int(os.environ["MQTT_KEEPALIVE"])
-if MQTT_TLS_CA_CERTS:
-    app.config["MQTT_TLS_CA_CERTS"] = MQTT_TLS_CA_CERTS
-if MQTT_TLS_ENABLED:
-    app.config["MQTT_TLS_VERSION"] = ssl.PROTOCOL_TLSv1_2
-    if MQTT_TLS_CIPHERS:
-        app.config["MQTT_TLS_CIPHERS"] = MQTT_TLS_CIPHERS
-
-mqtt = Mqtt(app)
 
 print(
     "[MQTT] config host={host} port={port} tls={tls} cmd_base={cmd} user_set={user}".format(
@@ -56,25 +42,49 @@ print(
     )
 )
 
-
-@mqtt.on_connect()
-def on_connect(client, userdata, flags, rc):
-    print(f"[MQTT] connected rc={rc}")
-
-
-@mqtt.on_disconnect()
-def on_disconnect(client, userdata, rc):
-    print(f"[MQTT] disconnected rc={rc}")
-
-
-@mqtt.on_log()
-def on_log(client, userdata, level, buf):
-    print(f"[MQTT-LOG] {level} {buf}")
+def resolve_ipv4(host: str, port: int) -> str:
+    if not MQTT_FORCE_IPV4:
+        return host
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        if infos:
+            return infos[0][4][0]
+    except OSError:
+        return host
+    return host
 
 
-@mqtt.on_publish()
-def on_publish(client, userdata, mid):
-    print(f"[MQTT] published mid={mid}")
+def publish_once(topic: str, payload: str, qos: int):
+    host = resolve_ipv4(MQTT_HOST, MQTT_PORT)
+    client_id = os.environ.get("MQTT_CLIENT_ID") or f"probe-{uuid.uuid4().hex[:12]}"
+    client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311, transport="tcp")
+
+    if MQTT_USERNAME:
+        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    if MQTT_TLS_ENABLED:
+        client.tls_set(
+            ca_certs=MQTT_TLS_CA_CERTS or None,
+            tls_version=ssl.PROTOCOL_TLSv1_2,
+            ciphers=MQTT_TLS_CIPHERS,
+        )
+        if MQTT_TLS_INSECURE:
+            client.tls_insecure_set(True)
+
+    client.connect(host, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
+    client.loop_start()
+    try:
+        info = client.publish(topic, payload, qos=qos, retain=False)
+        info.wait_for_publish(timeout=MQTT_PUBLISH_TIMEOUT)
+        return {
+            "host": host,
+            "client_id": client_id,
+            "connected": client.is_connected(),
+            "mid": info.mid,
+            "published": info.is_published(),
+        }
+    finally:
+        client.disconnect()
+        client.loop_stop()
 
 
 @app.get("/")
@@ -95,21 +105,17 @@ def publish():
     qos = int(os.environ.get("MQTT_QOS", "1"))
 
     try:
-        client = getattr(mqtt, "client", None)
-        connected = client.is_connected() if client is not None else False
-        result = mqtt.publish(topic, payload, qos=qos)
-        if isinstance(result, tuple):
-            rc, mid = result
-        else:
-            rc, mid = None, None
+        result = publish_once(topic, payload, qos=qos)
         return jsonify(
             {
                 "ok": True,
                 "topic": topic,
                 "qos": qos,
-                "rc": rc,
-                "mid": mid,
-                "connected": connected,
+                "connected": result["connected"],
+                "published": result["published"],
+                "mid": result["mid"],
+                "host": result["host"],
+                "client_id": result["client_id"],
                 "payload": payload,
             }
         )
