@@ -1,10 +1,13 @@
 import os
 import json
+import socket
 import ssl
+import uuid
 from datetime import datetime, timezone
 
 from flask import Flask, request, jsonify
 from flask_mqtt import Mqtt
+import paho.mqtt.client as paho_mqtt
 from pymongo import MongoClient
 
 # -----------------------
@@ -25,6 +28,11 @@ def env_bool(name: str, default: str = "false") -> bool:
 
 
 MQTT_TLS_ENABLED = env_bool("MQTT_TLS_ENABLED", "false")
+MQTT_FORCE_IPV4 = env_bool("MQTT_FORCE_IPV4", "true")
+MQTT_KEEPALIVE = int(os.environ.get("MQTT_KEEPALIVE", "30"))
+MQTT_PUBLISH_TIMEOUT = float(os.environ.get("MQTT_PUBLISH_TIMEOUT", "5"))
+MQTT_PUBLISH_QOS = int(os.environ.get("MQTT_QOS", "1"))
+MQTT_TLS_INSECURE = env_bool("MQTT_TLS_INSECURE", "false")
 
 MONGODB_URI = os.environ.get("MONGODB_URI")  # REQUIRED
 if not MONGODB_URI:
@@ -68,10 +76,22 @@ load_pool_cache()
 def utcnow_iso():
     return datetime.now(timezone.utc).isoformat()
 
+def resolve_ipv4(host: str, port: int) -> str:
+    if not MQTT_FORCE_IPV4:
+        return host
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        if infos:
+            return infos[0][4][0]
+    except OSError:
+        return host
+    return host
+
 # -----------------------
 # MQTT
 # -----------------------
-app.config["MQTT_BROKER_URL"] = MQTT_HOST
+MQTT_HOST_RESOLVED = resolve_ipv4(MQTT_HOST, MQTT_PORT)
+app.config["MQTT_BROKER_URL"] = MQTT_HOST_RESOLVED
 app.config["MQTT_BROKER_PORT"] = MQTT_PORT
 app.config["MQTT_TLS_ENABLED"] = MQTT_TLS_ENABLED
 # Optional: allow explicit MQTT client id via env to avoid broker kicking reconnects.
@@ -81,6 +101,7 @@ if MQTT_USERNAME:
     app.config["MQTT_USERNAME"] = MQTT_USERNAME
 if MQTT_PASSWORD:
     app.config["MQTT_PASSWORD"] = MQTT_PASSWORD
+app.config["MQTT_KEEPALIVE"] = MQTT_KEEPALIVE
 if MQTT_TLS_CA_CERTS:
     app.config["MQTT_TLS_CA_CERTS"] = MQTT_TLS_CA_CERTS
 if MQTT_TLS_ENABLED:
@@ -90,8 +111,9 @@ if MQTT_TLS_ENABLED:
 
 mqtt = Mqtt(app)
 print(
-    "[MQTT] config host={host} port={port} tls={tls} cmd_base={cmd} user_set={user}".format(
+    "[MQTT] config host={host} resolved={resolved} port={port} tls={tls} cmd_base={cmd} user_set={user}".format(
         host=MQTT_HOST,
+        resolved=MQTT_HOST_RESOLVED,
         port=MQTT_PORT,
         tls=MQTT_TLS_ENABLED,
         cmd=TOPIC_CMD_BASE,
@@ -110,8 +132,8 @@ def on_connect(client, userdata, flags, rc):
 
 
 @mqtt.on_disconnect()
-def on_disconnect(client, userdata, rc):
-    print("[MQTT] disconnected rc=", rc)
+def on_disconnect(*_args):
+    print("[MQTT] disconnected")
 
 @mqtt.on_message()
 def on_message(client, userdata, msg):
@@ -164,15 +186,31 @@ def publish_decision(pool_id: str, decision: str):
     topic = f"{TOPIC_CMD_BASE.rstrip('/')}/{pool_id}"
     payload = json.dumps({"pool": pool_id, "decision": decision, "ts": utcnow_iso()})
     try:
-        client = getattr(mqtt, "client", None)
-        if client is not None and not client.is_connected():
-            print("[MQTT] publish while disconnected")
-        result = mqtt.publish(topic, payload, qos=1)
-        if isinstance(result, tuple):
-            rc, mid = result
-            print(f"[CMD] {topic} -> {payload} (rc={rc} mid={mid})")
-        else:
-            print(f"[CMD] {topic} -> {payload}")
+        client_id_base = os.environ.get("MQTT_CLIENT_ID", "waterbnb")
+        client_id = f"{client_id_base}-pub-{uuid.uuid4().hex[:8]}"
+        client = paho_mqtt.Client(client_id=client_id, protocol=paho_mqtt.MQTTv311, transport="tcp")
+
+        if MQTT_USERNAME:
+            client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+        if MQTT_TLS_ENABLED:
+            client.tls_set(
+                ca_certs=MQTT_TLS_CA_CERTS or None,
+                tls_version=ssl.PROTOCOL_TLSv1_2,
+                ciphers=MQTT_TLS_CIPHERS,
+            )
+            if MQTT_TLS_INSECURE:
+                client.tls_insecure_set(True)
+
+        client.connect(MQTT_HOST_RESOLVED, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
+        client.loop_start()
+        try:
+            info = client.publish(topic, payload, qos=MQTT_PUBLISH_QOS, retain=False)
+            info.wait_for_publish(timeout=MQTT_PUBLISH_TIMEOUT)
+            published = info.is_published()
+            print(f"[CMD] {topic} -> {payload} (published={published} mid={info.mid})")
+        finally:
+            client.disconnect()
+            client.loop_stop()
     except Exception as exc:
         print("[CMD] publish failed:", exc)
 
